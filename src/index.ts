@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -11,6 +11,8 @@ import {
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import express from "express";
+import cors from "cors";
 import { GitHubClient, GitHubPRData, GitHubIssueData } from "./github-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,6 +20,8 @@ const __dirname = dirname(__filename);
 
 // Environment variables
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const PORT = parseInt(process.env.PORT || "3000", 10);
+const HOST = process.env.HOST || "0.0.0.0";
 
 class DocumentationMCPServer {
   private server: Server;
@@ -204,9 +208,40 @@ class DocumentationMCPServer {
   }
 
   async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error("Documentation MCP Server running on stdio");
+    const app = express();
+
+    // Enable CORS for all origins (configure as needed for production)
+    app.use(cors());
+
+    // Health check endpoint
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok", service: "documentation-mcp-server" });
+    });
+
+    // SSE endpoint for MCP
+    app.get("/sse", async (req, res) => {
+      console.error("New SSE connection established");
+
+      const transport = new SSEServerTransport("/message", res);
+      await this.server.connect(transport);
+
+      // Handle client disconnect
+      req.on("close", () => {
+        console.error("SSE connection closed");
+      });
+    });
+
+    // Message endpoint for client requests
+    app.post("/message", express.json(), async (req, res) => {
+      // This endpoint is handled by the SSE transport
+      res.status(200).end();
+    });
+
+    app.listen(PORT, HOST, () => {
+      console.error(`Documentation MCP Server running on http://${HOST}:${PORT}`);
+      console.error(`SSE endpoint: http://${HOST}:${PORT}/sse`);
+      console.error(`Health check: http://${HOST}:${PORT}/health`);
+    });
   }
 }
 
