@@ -1,25 +1,39 @@
 # Documentation MCP Server
 
-A Model Context Protocol (MCP) server that generates structured technical documentation from GitHub pull requests and issues.
+A Model Context Protocol (MCP) server that provides GitHub PR/issue data along with a documentation guide for LLM-based documentation generation.
 
 ## Overview
 
-This MCP server provides a single tool for deterministic documentation generation. It:
+This MCP server is a **data provider** that:
 
 - Fetches GitHub PR and issue data server-side
-- Applies a fixed documentation template
-- Generates validated Markdown documentation
-- Fails explicitly when requirements aren't met
+- Loads a static documentation template
+- Returns formatted context to the client LLM
+- Lets the client LLM generate the actual documentation
 
-**This is a compiler, not an assistant.** It does not chat, ask follow-up questions, or make autonomous decisions.
+**Architecture Flow:**
+
+```
+User → Client LLM → MCP Tool (writeDocumentation)
+                         ↓
+                   MCP Server fetches GitHub data
+                         ↓
+                   Returns guide + GitHub context
+                         ↓
+                   Client LLM generates documentation
+                         ↓
+                   User receives documentation
+```
+
+The server does NOT contain its own LLM - it aggregates data for the client's LLM to process.
 
 ## Features
 
-- **Single Tool**: `writeDocumentation` - generates documentation from GitHub URLs
+- **Single Tool**: `writeDocumentation` - aggregates GitHub data with documentation guide
 - **Server-Side Fetching**: Automatically retrieves PR details, linked issues, and diffs
-- **Static Template**: Uses a fixed documentation guide (not user-configurable at runtime)
-- **Validation**: Enforces required sections and forbidden phrases
-- **Explicit Errors**: Fails loudly when inputs are invalid or outputs don't meet requirements
+- **Static Template**: Uses a fixed documentation guide loaded at startup
+- **No LLM Calls**: Returns raw context for the client LLM to process
+- **Explicit Errors**: Fails clearly when GitHub data cannot be fetched
 
 ## Installation
 
@@ -30,15 +44,14 @@ npm run build
 
 ## Configuration
 
-Set the following environment variables:
+Set the following environment variable (optional):
 
 ```bash
-# Required
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
-
-# Optional (recommended for higher rate limits)
+# Optional (recommended for higher rate limits and private repos)
 export GITHUB_TOKEN="your-github-token"
 ```
+
+No API keys required - the client LLM handles generation.
 
 ## Usage
 
@@ -61,7 +74,6 @@ Add to your MCP client configuration:
       "command": "node",
       "args": ["/path/to/documentation-mcp-server/dist/index.js"],
       "env": {
-        "ANTHROPIC_API_KEY": "your-key-here",
         "GITHUB_TOKEN": "your-token-here"
       }
     }
@@ -79,26 +91,30 @@ Add to your MCP client configuration:
 
 At least one of `prUrl` or `issueUrl` is required.
 
-**Example:**
+**Example Usage:**
 
-```json
-{
-  "prUrl": "https://github.com/owner/repo/pull/123",
-  "notes": "This fixes a critical authentication bug"
-}
+When you call the tool from your LLM client:
+
+```
+User: "Write documentation for https://github.com/owner/repo/pull/123"
+
+Client LLM: [Calls writeDocumentation tool]
+
+MCP Server: [Returns documentation guide + GitHub PR data]
+
+Client LLM: [Generates documentation following the guide]
+
+User: [Receives completed documentation]
 ```
 
 **Output:**
 
-Returns structured Markdown documentation with the following sections:
+Returns a formatted prompt containing:
 
-1. Overview
-2. Problem Statement
-3. Solution
-4. Changes
-5. Testing
-6. Dependencies
-7. Notes
+1. The documentation guide (structure, rules, required sections)
+2. GitHub PR/issue data (title, description, files, diffs)
+3. Any additional notes provided
+4. Instructions for the client LLM to generate documentation
 
 **Error Conditions:**
 
@@ -106,43 +122,51 @@ The tool will return an error if:
 
 - GitHub URLs are invalid or inaccessible
 - Required input is missing
-- Generated documentation fails validation
-- External APIs are unavailable
+- GitHub API is unavailable
 
 ## Documentation Template
 
 The server uses a static documentation guide located at `documentation-guide.md`. This template:
 
-- Defines required sections
+- Defines 7 required sections (Overview, Problem Statement, Solution, Changes, Testing, Dependencies, Notes)
 - Specifies formatting rules
-- Lists forbidden phrases
+- Lists forbidden phrases (no speculation, no emojis)
 - Ensures consistent output structure
 
-The guide is loaded once at startup and cannot be modified at runtime.
-
-## Validation
-
-Generated documentation is validated for:
-
-- Presence of all required sections
-- Correct section order
-- No emojis
-- No speculative language ("I think", "maybe", "possibly")
-- Proper Markdown formatting
-
-If validation fails, the tool returns an error instead of partial output.
+The guide is loaded once at startup and included in every tool response.
 
 ## Architecture
 
 ```
 src/
-├── index.ts                    # MCP server implementation
-├── github-client.ts            # GitHub API integration
-├── documentation-generator.ts  # LLM integration and orchestration
-└── validator.ts                # Output validation logic
+├── index.ts           # MCP server implementation
+└── github-client.ts   # GitHub API integration
 
-documentation-guide.md          # Static documentation template
+documentation-guide.md # Static documentation template
 ```
+
+### How It Works
+
+1. **User Request**: User asks their LLM to document a GitHub PR/issue
+2. **Tool Invocation**: Client LLM calls `writeDocumentation` with URLs
+3. **Data Fetching**: MCP server fetches GitHub data (PR, issue, diffs)
+4. **Context Building**: Server combines guide + GitHub data into formatted prompt
+5. **Return to Client**: Server returns the complete context
+6. **Generation**: Client LLM generates documentation following the guide
+7. **Validation**: Client LLM (optionally) validates output structure
+
+## Why This Architecture?
+
+**Before (incorrect):**
+- MCP Server contained its own LLM call (Anthropic SDK)
+- Required ANTHROPIC_API_KEY in the server
+- Duplicated LLM usage (client + server both calling LLMs)
+
+**Now (correct MCP pattern):**
+- MCP Server is a pure data provider
+- No LLM dependencies in the server
+- Client's existing LLM does all generation
+- Simpler, cheaper, more flexible
 
 ## Development
 
@@ -154,22 +178,18 @@ npm run build
 npm start
 ```
 
-## Non-Goals
+## What This Server Does NOT Do
 
-This server does NOT:
-
+- Call external LLMs (client handles generation)
 - Maintain conversation state
 - Ask follow-up questions
-- Perform autonomous decision-making
 - Store or cache results
-- Provide multiple tools
-- Allow runtime template customization
+- Validate generated documentation (client's responsibility)
 
 ## Requirements
 
 - Node.js 18+
 - TypeScript 5+
-- Anthropic API key
 - GitHub token (optional, but recommended)
 
 ## License

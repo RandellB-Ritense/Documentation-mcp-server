@@ -8,22 +8,21 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { GitHubClient } from "./github-client.js";
-import { DocumentationGenerator } from "./documentation-generator.js";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { GitHubClient, GitHubPRData, GitHubIssueData } from "./github-client.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Environment variables
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-
-if (!ANTHROPIC_API_KEY) {
-  console.error("Error: ANTHROPIC_API_KEY environment variable is required");
-  process.exit(1);
-}
 
 class DocumentationMCPServer {
   private server: Server;
   private githubClient: GitHubClient;
-  private docGenerator: DocumentationGenerator;
+  private guideContent: string;
 
   constructor() {
     this.server = new Server(
@@ -39,9 +38,62 @@ class DocumentationMCPServer {
     );
 
     this.githubClient = new GitHubClient(GITHUB_TOKEN);
-    this.docGenerator = new DocumentationGenerator(ANTHROPIC_API_KEY!);
+
+    // Load the static documentation guide
+    const guidePath = join(__dirname, "..", "documentation-guide.md");
+    this.guideContent = readFileSync(guidePath, "utf-8");
 
     this.setupHandlers();
+  }
+
+  private buildPrompt(
+    prData?: GitHubPRData,
+    issueData?: GitHubIssueData,
+    notes?: string
+  ): string {
+    let prompt = this.guideContent + "\n\n---\n\n# Source Materials\n\n";
+
+    if (prData) {
+      prompt += `## Pull Request Data\n\n`;
+      prompt += `**Title:** ${prData.title}\n\n`;
+      prompt += `**URL:** ${prData.url}\n\n`;
+      prompt += `**Description:**\n${prData.description || "No description provided"}\n\n`;
+
+      if (prData.linkedIssue) {
+        prompt += `**Linked Issue:**\n`;
+        prompt += `- Title: ${prData.linkedIssue.title}\n`;
+        prompt += `- URL: ${prData.linkedIssue.url}\n`;
+        prompt += `- Description: ${prData.linkedIssue.description || "No description"}\n\n`;
+      }
+
+      prompt += `**Files Changed (${prData.files.length}):**\n\n`;
+      for (const file of prData.files) {
+        prompt += `### ${file.filename}\n`;
+        prompt += `Status: ${file.status}, +${file.additions} -${file.deletions}\n\n`;
+        if (file.patch) {
+          prompt += "```diff\n";
+          prompt += file.patch;
+          prompt += "\n```\n\n";
+        }
+      }
+    }
+
+    if (issueData && !prData?.linkedIssue) {
+      prompt += `## Issue Data\n\n`;
+      prompt += `**Title:** ${issueData.title}\n\n`;
+      prompt += `**URL:** ${issueData.url}\n\n`;
+      prompt += `**Description:**\n${issueData.description || "No description provided"}\n\n`;
+    }
+
+    if (notes) {
+      prompt += `## Additional Notes\n\n`;
+      prompt += notes;
+      prompt += "\n\n";
+    }
+
+    prompt += `---\n\nGenerate the technical documentation following the guide exactly. Do not guess or speculate on missing information.`;
+
+    return prompt;
   }
 
   private setupHandlers() {
@@ -51,7 +103,7 @@ class DocumentationMCPServer {
         {
           name: "writeDocumentation",
           description:
-            "Generate technical documentation from GitHub pull requests and issues. Requires at least one of prUrl or issueUrl.",
+            "Fetch GitHub PR/issue data and return a prompt for the client LLM to generate technical documentation. Returns the documentation guide along with GitHub context.",
           inputSchema: {
             type: "object",
             properties: {
@@ -128,26 +180,14 @@ class DocumentationMCPServer {
           }
         }
 
-        // Generate documentation
-        let documentation;
-        try {
-          documentation = await this.docGenerator.generate(
-            prData,
-            issueData,
-            args.notes
-          );
-        } catch (error) {
-          throw new McpError(
-            ErrorCode.InternalError,
-            `Failed to generate documentation: ${error instanceof Error ? error.message : "Unknown error"}`
-          );
-        }
+        // Build the prompt with guide + GitHub context
+        const prompt = this.buildPrompt(prData, issueData, args.notes);
 
         return {
           content: [
             {
               type: "text",
-              text: documentation,
+              text: prompt,
             },
           ],
         };
